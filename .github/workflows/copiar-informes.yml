@@ -1,1 +1,57 @@
+name: Copiar informes a main
 
+# La rutina "Subir informe a GitHub (nube)" sube los PDFs a una rama claude/...
+# Este flujo los copia a main, que es la rama que lee el sitio Mis Metas.
+on:
+  push:
+    branches:
+      - "claude/**"
+      - "main"
+    paths:
+      - "informes/**"
+      - ".github/workflows/copiar-informes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: copiar-informes
+  cancel-in-progress: false
+
+jobs:
+  copiar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Copiar a main los PDFs que falten
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --quiet origin "+refs/heads/claude/*:refs/remotes/origin/claude/*"
+          mkdir -p informes
+          for rama in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/claude/); do
+            for f in $(git ls-tree --name-only "$rama" informes/ | grep -E '^informes/[0-9]{4}-[0-9]{2}-[0-9]{2}\.pdf$' || true); do
+              if [ ! -f "$f" ]; then
+                git show "$rama:$f" > "$f"
+                echo "Copiado $f desde $rama"
+              fi
+            done
+          done
+          git add informes/
+          if git diff --cached --quiet; then
+            echo "No hay PDFs nuevos."
+            exit 0
+          fi
+          fechas=$(git diff --cached --name-only | sed -E 's#informes/(.*)\.pdf#\1#' | tr '\n' ' ')
+          git commit -m "Informes ${fechas}"
+          for intento in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            git pull --rebase origin main
+          done
+          exit 1
